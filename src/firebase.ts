@@ -7,6 +7,6 @@ const app = initializeApp(firebaseConfig);
 
 // Thêm dòng này để ép TypeScript bỏ qua kiểm tra lỗi
 // @ts-ignore
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = (getFirestore as any)(app, firebaseConfig.firestoreDatabaseId);
 
 export const auth = getAuth();
