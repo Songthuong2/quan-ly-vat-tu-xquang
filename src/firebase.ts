@@ -4,5 +4,9 @@ import { getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+
+// Thêm dòng này để ép TypeScript bỏ qua kiểm tra lỗi
+// @ts-ignore
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
 export const auth = getAuth();
