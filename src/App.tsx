@@ -29,6 +29,7 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Calendar,
+  DollarSign,
   ClipboardCheck,
   CalendarRange,
   Pencil,
@@ -78,7 +79,8 @@ import {
   Line,
   AreaChart,
   Area,
-  Legend
+  Legend,
+  LabelList
 } from 'recharts';
 
 // --- Types ---
@@ -2780,6 +2782,35 @@ function Reports({ transactions, items, categories, holidays, globalSearch, dark
 
   const daysInRange = Math.max(1, Math.ceil((endDateTime - startDateTime) / 86400000));
 
+  const prevStartDateTime = useMemo(() => {
+    const start = new Date(startDate + 'T00:00:00');
+    if (reportType === 'month') {
+      return new Date(start.getFullYear(), start.getMonth() - 1, 1).getTime();
+    } else if (reportType === 'week') {
+      return start.getTime() - 7 * 24 * 60 * 60 * 1000;
+    } else if (reportType === 'quarter') {
+      return new Date(start.getFullYear(), start.getMonth() - 3, 1).getTime();
+    } else if (reportType === 'year') {
+      return new Date(start.getFullYear() - 1, 0, 1).getTime();
+    }
+    const end = new Date(endDate + 'T23:59:59');
+    return start.getTime() - (end.getTime() - start.getTime()) - 1000;
+  }, [startDate, endDate, reportType]);
+
+  const prevEndDateTime = useMemo(() => {
+    const start = new Date(startDate + 'T00:00:00');
+    if (reportType === 'month') {
+      return new Date(start.getFullYear(), start.getMonth(), 0, 23, 59, 59).getTime();
+    } else if (reportType === 'week') {
+      return start.getTime() - 1000;
+    } else if (reportType === 'quarter') {
+      return new Date(start.getFullYear(), start.getMonth(), 0, 23, 59, 59).getTime();
+    } else if (reportType === 'year') {
+      return new Date(start.getFullYear() - 1, 11, 31, 23, 59, 59).getTime();
+    }
+    return start.getTime() - 1000;
+  }, [startDate, endDate, reportType]);
+
   const detailedReport = useMemo(() => {
     const filteredItems = globalSearch 
       ? items.filter(i => i.name.toLowerCase().includes(globalSearch.toLowerCase()))
@@ -2794,19 +2825,30 @@ function Reports({ transactions, items, categories, holidays, globalSearch, dark
       
       const getTs = (t: any) => {
         if (!t.timestamp) return 0;
-        if (t.timestamp.toDate) return t.timestamp.toDate().getTime();
-        if (t.timestamp.seconds) return t.timestamp.seconds * 1000;
         
+        // Handle Firestore Timestamp
+        if (typeof t.timestamp.toDate === 'function') {
+          return t.timestamp.toDate().getTime();
+        }
+        
+        // Handle Firestore Timestamp-like object {seconds, nanoseconds}
+        if (t.timestamp.seconds !== undefined) {
+          return t.timestamp.seconds * 1000;
+        }
+        
+        // Handle Date object or string
+        const ts = new Date(t.timestamp).getTime();
+        if (!isNaN(ts)) return ts;
+
+        // Handle DD/MM/YYYY format
         const dateStr = String(t.timestamp);
-        // Handle DD/MM/YYYY HH:mm:ss or DD/MM/YYYY
         const ddmmyyyy = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(.*)$/);
         if (ddmmyyyy) {
           const [_, d, m, y, rest] = ddmmyyyy;
           return new Date(`${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}${rest || ''}`).getTime();
         }
         
-        const ts = new Date(t.timestamp).getTime();
-        return isNaN(ts) ? 0 : ts;
+        return 0;
       };
 
       const earliestTransTs = itemTrans.length > 0 
@@ -2825,6 +2867,7 @@ function Reports({ transactions, items, categories, holidays, globalSearch, dark
           closingBalance: 0,
           inQty: 0,
           outQty: 0,
+          prevOutQty: 0,
           avgDailyUsage: 0
         };
       }
@@ -2837,6 +2880,13 @@ function Reports({ transactions, items, categories, holidays, globalSearch, dark
 
       const inQty = transInRange.filter(t => t.type === 'IN').reduce((sum, t) => sum + Number(t.quantity || 0), 0);
       const outQty = transInRange.filter(t => t.type === 'OUT' || t.type === 'TRANSFER').reduce((sum, t) => sum + Number(t.quantity || 0), 0);
+
+      // Previous period out quantity
+      const prevTransInRange = itemTrans.filter(t => {
+        const ts = getTs(t);
+        return ts >= prevStartDateTime && ts <= prevEndDateTime;
+      });
+      const prevOutQty = prevTransInRange.filter(t => t.type === 'OUT' || t.type === 'TRANSFER').reduce((sum, t) => sum + Number(t.quantity || 0), 0);
 
       // Transactions from startDateTime until NOW (to calculate opening balance)
       const transFromStart = itemTrans.filter(t => getTs(t) >= startDateTime);
@@ -2860,21 +2910,50 @@ function Reports({ transactions, items, categories, holidays, globalSearch, dark
         closingBalance,
         inQty,
         outQty,
+        prevOutQty,
         avgDailyUsage
       };
     });
-  }, [items, transactionsByItem, startDateTime, endDateTime, workingDaysInRange, globalSearch, startDate, endDate]);
+  }, [items, transactionsByItem, startDateTime, endDateTime, prevStartDateTime, prevEndDateTime, workingDaysInRange, globalSearch, startDate, endDate]);
 
   const totalIn = useMemo(() => detailedReport.reduce((sum, item) => sum + item.inQty, 0), [detailedReport]);
   const totalOut = useMemo(() => detailedReport.reduce((sum, item) => sum + item.outQty, 0), [detailedReport]);
+  const totalPrevOut = useMemo(() => detailedReport.reduce((sum, item) => sum + item.prevOutQty, 0), [detailedReport]);
+  const totalValue = useMemo(() => detailedReport.reduce((sum, item) => sum + (Number(item.closingBalance) * Number(item.price || 0)), 0), [detailedReport]);
   
+  const uniqueCategories = useMemo(() => {
+    const map = new Map<string, Category>();
+    categories.forEach(cat => {
+      const normalizedName = cat.name.trim().toLowerCase();
+      if (!map.has(normalizedName)) {
+        map.set(normalizedName, cat);
+      }
+    });
+    return Array.from(map.values());
+  }, [categories]);
+
   const categoryValueData = useMemo(() => {
-    return categories.map(cat => {
+    if (!uniqueCategories.length || !detailedReport.length) return [];
+    return uniqueCategories.map(cat => {
       const catItems = detailedReport.filter(i => i.categoryId === cat.id);
-      const value = catItems.reduce((sum, i) => sum + (i.currentStock * (i.price || 0)), 0);
-      return { name: cat.name, value };
+      const value = catItems.reduce((sum, i) => {
+        const closing = Number(i.closingBalance) || 0;
+        const price = Number(i.price) || 0;
+        return sum + (closing * price);
+      }, 0);
+      return { name: cat.name, value: Math.max(0, value) };
     }).filter(d => d.value > 0).sort((a, b) => b.value - a.value);
-  }, [categories, detailedReport]);
+  }, [uniqueCategories, detailedReport]);
+
+  const categoryFluctuationData = useMemo(() => {
+    if (!uniqueCategories.length || !detailedReport.length) return [];
+    return uniqueCategories.map(cat => {
+      const catItems = detailedReport.filter(i => i.categoryId === cat.id);
+      const inQty = catItems.reduce((sum, i) => sum + (Number(i.inQty) || 0), 0);
+      const outQty = catItems.reduce((sum, i) => sum + (Number(i.outQty) || 0), 0);
+      return { name: cat.name, inQty, outQty };
+    }).filter(d => d.inQty > 0 || d.outQty > 0).sort((a, b) => (b.inQty + b.outQty) - (a.inQty + a.outQty));
+  }, [uniqueCategories, detailedReport]);
 
   const [searchTerm, setSearchTerm] = useState('');
   const [showOnlyWithChanges, setShowOnlyWithChanges] = useState(false);
@@ -2886,6 +2965,37 @@ function Reports({ transactions, items, categories, holidays, globalSearch, dark
       return matchesSearch && (!showOnlyWithChanges || hasChanges);
     });
   }, [detailedReport, searchTerm, showOnlyWithChanges]);
+
+  const itemComparisonData = useMemo(() => {
+    const data = filteredDetailedReport
+      .filter(item => item.outQty > 0 || item.prevOutQty > 0)
+      .map(item => {
+        const current = item.outQty;
+        const previous = item.prevOutQty || 0;
+        let percentChange = 0;
+        if (previous > 0) {
+          percentChange = ((current - previous) / previous) * 100;
+        } else if (current > 0) {
+          percentChange = 100;
+        }
+        return {
+          name: item.name,
+          current,
+          previous,
+          percentChange: Math.round(percentChange)
+        };
+      })
+      .sort((a, b) => b.current - a.current)
+      .slice(0, 10);
+    
+    return data;
+  }, [filteredDetailedReport]);
+
+  const [isChartReady, setIsChartReady] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setIsChartReady(true), 500);
+    return () => clearTimeout(timer);
+  }, []);
 
   const handleExportExcel = () => {
     const data = filteredDetailedReport.map(item => ({
@@ -3101,34 +3211,69 @@ function Reports({ transactions, items, categories, holidays, globalSearch, dark
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className={`p-6 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-          <p className={`text-xs font-bold uppercase tracking-wider mb-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Tổng nhập kho (kỳ)</p>
-          <p className="text-2xl font-black text-blue-600">{totalIn.toLocaleString('vi-VN')}</p>
-          <div className={`mt-4 h-1 w-full rounded-full overflow-hidden ${darkMode ? 'bg-blue-900/20' : 'bg-blue-50'}`}>
-            <div className="h-full bg-blue-500" style={{ width: `${Math.min(100, (totalIn / (totalIn + totalOut || 1)) * 100)}%` }}></div>
+      {/* Summary Metrics */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <div className={`p-5 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+          <div className="flex items-center gap-4">
+            <div className="p-3 rounded-xl bg-blue-500/10 text-blue-500">
+              <DollarSign className="w-6 h-6" />
+            </div>
+            <div>
+              <p className={`text-xs font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Tổng giá trị tồn</p>
+              <h4 className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                {totalValue.toLocaleString('vi-VN')} <span className="text-xs font-normal opacity-70">đ</span>
+              </h4>
+            </div>
           </div>
         </div>
-        <div className={`p-6 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-          <p className={`text-xs font-bold uppercase tracking-wider mb-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Tổng xuất kho (kỳ)</p>
-          <p className="text-2xl font-black text-emerald-600">{totalOut.toLocaleString('vi-VN')}</p>
-          <div className={`mt-4 h-1 w-full rounded-full overflow-hidden ${darkMode ? 'bg-emerald-900/20' : 'bg-emerald-50'}`}>
-            <div className="h-full bg-emerald-500" style={{ width: `${Math.min(100, (totalOut / (totalIn + totalOut || 1)) * 100)}%` }}></div>
+        <div className={`p-5 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+          <div className="flex items-center gap-4">
+            <div className="p-3 rounded-xl bg-blue-500/10 text-blue-500">
+              <ArrowUpRight className="w-6 h-6" />
+            </div>
+            <div>
+              <p className={`text-xs font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Tổng nhập trong kỳ</p>
+              <h4 className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                {totalIn.toLocaleString('vi-VN')} <span className="text-xs font-normal opacity-70">đơn vị</span>
+              </h4>
+            </div>
           </div>
         </div>
-        <div className={`p-6 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-          <p className={`text-xs font-bold uppercase tracking-wider mb-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Giá trị tồn kho hiện tại</p>
-          <p className={`text-2xl font-black ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}>
-            {items.reduce((sum, i) => sum + (i.currentStock * (i.price || 0)), 0).toLocaleString('vi-VN')} đ
-          </p>
-          <div className={`mt-4 h-1 w-full rounded-full overflow-hidden ${darkMode ? 'bg-purple-900/20' : 'bg-purple-50'}`}>
-            <div className="h-full bg-purple-500 w-3/4"></div>
+        <div className={`p-5 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+          <div className="flex items-center gap-4">
+            <div className="p-3 rounded-xl bg-rose-500/10 text-rose-500">
+              <ArrowDownRight className="w-6 h-6" />
+            </div>
+            <div>
+              <p className={`text-xs font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Tổng xuất trong kỳ</p>
+              <h4 className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                {totalOut.toLocaleString('vi-VN')} <span className="text-xs font-normal opacity-70">đơn vị</span>
+              </h4>
+            </div>
+          </div>
+        </div>
+        <div className={`p-5 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+          <div className="flex items-center gap-4">
+            <div className="p-3 rounded-xl bg-amber-500/10 text-amber-500">
+              <TrendingUp className="w-6 h-6" />
+            </div>
+            <div>
+              <p className={`text-xs font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Biến động tiêu thụ</p>
+              <div className="flex items-baseline gap-2">
+                <h4 className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                  {totalPrevOut > 0 ? (((totalOut - totalPrevOut) / totalPrevOut) * 100).toFixed(1) : (totalOut > 0 ? '100' : '0')}%
+                </h4>
+                <span className={`text-[10px] ${totalOut > totalPrevOut ? 'text-rose-500' : 'text-emerald-500'}`}>
+                  {totalOut > totalPrevOut ? 'Tăng' : 'Giảm'} so với kỳ trước
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
       {/* Detailed Table */}
-      <div className={`rounded-2xl border shadow-sm overflow-hidden ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+      <div className={`mb-8 rounded-2xl border shadow-sm overflow-hidden ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
         <div className={`p-6 border-b flex flex-col md:flex-row justify-between items-start md:items-center gap-4 ${darkMode ? 'border-slate-700' : 'border-slate-100'}`}>
           <div>
             <h3 className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Chi tiết vật tư trong kỳ</h3>
@@ -3159,7 +3304,7 @@ function Reports({ transactions, items, categories, holidays, globalSearch, dark
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className={`${darkMode ? 'bg-slate-800/50' : 'bg-slate-50/50'}`}>
+              <tr className={`${darkMode ? 'bg-slate-900/50' : 'bg-slate-50/50'}`}>
                 <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>Vật tư</th>
                 <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b text-right ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>Tồn đầu</th>
                 <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b text-right ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>Nhập</th>
@@ -3169,82 +3314,184 @@ function Reports({ transactions, items, categories, holidays, globalSearch, dark
               </tr>
             </thead>
             <tbody className={`divide-y ${darkMode ? 'divide-slate-700' : 'divide-slate-100'}`}>
-              {filteredDetailedReport.map((item) => (
-                <tr key={item.id} className={`transition-colors ${darkMode ? 'hover:bg-slate-700/50' : 'hover:bg-slate-50/50'}`}>
-                  <td className="p-4">
-                    <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>{item.name}</p>
-                    <p className={`text-xs ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>{categories.find(c => c.id === item.categoryId)?.name}</p>
+              {filteredDetailedReport.length > 0 ? (
+                filteredDetailedReport.map((item) => (
+                  <tr key={item.id} className={`transition-colors ${darkMode ? 'hover:bg-slate-700/50' : 'hover:bg-slate-50/50'}`}>
+                    <td className="p-4">
+                      <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>{item.name}</p>
+                      <p className={`text-[10px] ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>{categories.find(c => c.id === item.categoryId)?.name}</p>
+                    </td>
+                    <td className={`p-4 text-right text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>{item.openingBalance} {item.unit}</td>
+                    <td className="p-4 text-right text-sm font-bold text-blue-600">+{item.inQty}</td>
+                    <td className="p-4 text-right text-sm font-bold text-rose-600">-{item.outQty}</td>
+                    <td className={`p-4 text-right text-sm font-bold ${darkMode ? 'text-slate-200' : 'text-slate-900'}`}>{item.closingBalance} {item.unit}</td>
+                    <td className={`p-4 text-right text-sm font-medium ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>{item.avgDailyUsage.toFixed(2)}</td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={6} className="p-12 text-center">
+                    <div className="flex flex-col items-center justify-center opacity-30">
+                      <Search className="w-12 h-12 mb-2" />
+                      <p className="text-sm">Không tìm thấy dữ liệu phù hợp</p>
+                    </div>
                   </td>
-                  <td className={`p-4 text-right text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>{item.openingBalance} {item.unit}</td>
-                  <td className="p-4 text-right text-sm font-bold text-blue-600">+{item.inQty}</td>
-                  <td className="p-4 text-right text-sm font-bold text-emerald-600">-{item.outQty}</td>
-                  <td className={`p-4 text-right text-sm font-bold ${darkMode ? 'text-slate-200' : 'text-slate-900'}`}>{item.closingBalance} {item.unit}</td>
-                  <td className={`p-4 text-right text-sm font-medium ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>{item.avgDailyUsage.toFixed(2)}</td>
                 </tr>
-              ))}
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className={`p-6 rounded-2xl border shadow-sm min-w-0 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-          <h3 className={`text-lg font-bold mb-8 ${darkMode ? 'text-white' : 'text-slate-900'}`}>Giá trị theo nhóm vật tư</h3>
-          <div className="h-80 min-w-0">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={categoryValueData}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={80}
-                  outerRadius={100}
-                  paddingAngle={5}
-                  dataKey="value"
-                >
-                  {categoryValueData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ec4899'][index % 5]} />
-                  ))}
-                </Pie>
-                <Tooltip 
-                  formatter={(value: number) => value.toLocaleString('vi-VN') + ' đ'}
-                  contentStyle={{
-                    borderRadius: '16px', 
-                    border: 'none', 
-                    boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)',
-                    backgroundColor: darkMode ? '#1e293b' : '#ffffff',
-                    color: darkMode ? '#ffffff' : '#000000'
-                  }}
-                  itemStyle={{ color: darkMode ? '#cbd5e1' : '#475569' }}
-                />
-                <Legend verticalAlign="bottom" height={36}/>
-              </PieChart>
-            </ResponsiveContainer>
+        <div className={`p-6 rounded-2xl border shadow-sm min-w-0 flex flex-col h-[450px] ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+          <div className="mb-6">
+            <h3 className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Giá trị theo nhóm vật tư</h3>
+            <p className={`text-xs mt-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Phân bổ giá trị tồn kho hiện tại</p>
+          </div>
+          <div className="flex-1 relative min-h-0">
+            {isChartReady && categoryValueData.length > 0 ? (
+              <>
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={categoryValueData}
+                      cx="50%"
+                      cy="45%"
+                      innerRadius={70}
+                      outerRadius={95}
+                      paddingAngle={4}
+                      dataKey="value"
+                      stroke="none"
+                    >
+                      {categoryValueData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#84cc16'][index % 7]} />
+                      ))}
+                    </Pie>
+                    <Tooltip 
+                      formatter={(value: number) => value.toLocaleString('vi-VN') + ' đ'}
+                      contentStyle={{
+                        borderRadius: '16px', 
+                        border: 'none', 
+                        boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)',
+                        backgroundColor: darkMode ? '#1e293b' : '#ffffff',
+                        color: darkMode ? '#ffffff' : '#000000'
+                      }}
+                      itemStyle={{ color: darkMode ? '#cbd5e1' : '#475569' }}
+                    />
+                    <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ paddingTop: '20px' }} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="absolute top-[45%] left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none">
+                  <p className={`text-xl font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                    {totalValue > 1000000 ? (totalValue / 1000000).toFixed(1) + 'M' : totalValue.toLocaleString('vi-VN')}
+                  </p>
+                  <p className={`text-[10px] font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                    Tổng giá trị (đ)
+                  </p>
+                </div>
+              </>
+            ) : categoryValueData.length === 0 ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8">
+                <Package className={`w-12 h-12 mb-4 opacity-20 ${darkMode ? 'text-white' : 'text-slate-900'}`} />
+                <p className={`text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                  {detailedReport.length === 0 
+                    ? 'Không có vật tư nào trong kỳ báo cáo' 
+                    : (detailedReport.some(i => i.price > 0) 
+                        ? 'Tồn kho hiện tại đang bằng 0' 
+                        : 'Chưa có dữ liệu giá trị (vui lòng cập nhật đơn giá vật tư)')}
+                </p>
+              </div>
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <Loader2 className="w-8 h-8 animate-spin text-blue-500 opacity-20" />
+              </div>
+            )}
           </div>
         </div>
 
-        <div className={`p-6 rounded-2xl border shadow-sm min-w-0 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-          <h3 className={`text-lg font-bold mb-8 ${darkMode ? 'text-white' : 'text-slate-900'}`}>Biến động tồn kho</h3>
-          <div className="h-80 min-w-0">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={categoryValueData.slice(0, 5)}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={darkMode ? "#334155" : "#f1f5f9"} />
-                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: darkMode ? '#94a3b8' : '#64748b', fontSize: 10}} />
-                <YAxis axisLine={false} tickLine={false} tick={{fill: darkMode ? '#94a3b8' : '#64748b', fontSize: 10}} />
-                <Tooltip 
-                  formatter={(value: number) => value.toLocaleString('vi-VN') + ' đ'}
-                  contentStyle={{
-                    borderRadius: '16px', 
-                    border: 'none', 
-                    boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)',
-                    backgroundColor: darkMode ? '#1e293b' : '#ffffff',
-                    color: darkMode ? '#ffffff' : '#000000'
-                  }}
-                  itemStyle={{ color: darkMode ? '#cbd5e1' : '#475569' }}
-                />
-                <Bar dataKey="value" fill="#3b82f6" radius={[6, 6, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+        <div className={`p-6 rounded-2xl border shadow-sm min-w-0 flex flex-col h-[450px] ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+          <div className="mb-6">
+            <h3 className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+              So sánh tiêu hao {reportType === 'month' ? 'với tháng trước' : 
+                               reportType === 'week' ? 'với tuần trước' : 
+                               reportType === 'quarter' ? 'với quý trước' : 
+                               reportType === 'year' ? 'với năm trước' : 'với kỳ trước'}
+            </h3>
+            <p className={`text-xs mt-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Top 10 vật tư biến động tiêu thụ mạnh nhất</p>
+          </div>
+          <div className="flex-1 relative min-h-0">
+            {isChartReady && itemComparisonData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={itemComparisonData} margin={{ top: 40, right: 10, left: 0, bottom: 60 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={darkMode ? "#334155" : "#f1f5f9"} />
+                  <XAxis 
+                    dataKey="name" 
+                    axisLine={false} 
+                    tickLine={false} 
+                    tick={{fill: darkMode ? '#94a3b8' : '#64748b', fontSize: 9}}
+                    interval={0}
+                    angle={-45}
+                    textAnchor="end"
+                    height={80}
+                  />
+                  <YAxis axisLine={false} tickLine={false} tick={{fill: darkMode ? '#94a3b8' : '#64748b', fontSize: 10}} />
+                  <Tooltip 
+                    contentStyle={{
+                      borderRadius: '16px', 
+                      border: 'none', 
+                      boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)',
+                      backgroundColor: darkMode ? '#1e293b' : '#ffffff',
+                      color: darkMode ? '#ffffff' : '#000000'
+                    }}
+                    itemStyle={{ color: darkMode ? '#cbd5e1' : '#475569' }}
+                    formatter={(value: number, name: string, props: any) => {
+                      const isCurrent = name.includes('này') || name.includes('Kỳ này');
+                      if (isCurrent) {
+                        const percent = props.payload.percentChange;
+                        const sign = percent > 0 ? '+' : '';
+                        return [`${value} (${sign}${percent}%)`, name];
+                      }
+                      return [value, name];
+                    }}
+                  />
+                  <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingTop: '0px', marginBottom: '20px' }} />
+                  <Bar 
+                    name={reportType === 'month' ? 'Tháng này' : reportType === 'week' ? 'Tuần này' : reportType === 'quarter' ? 'Quý này' : reportType === 'year' ? 'Năm này' : 'Kỳ này'} 
+                    dataKey="current" 
+                    fill="#3b82f6" 
+                    radius={[4, 4, 0, 0]} 
+                    barSize={20}
+                  >
+                    <LabelList 
+                      dataKey="percentChange" 
+                      position="top" 
+                      offset={10}
+                      style={{ fontSize: '9px', fontWeight: 'bold', fill: darkMode ? '#3b82f6' : '#2563eb' }}
+                      formatter={(val: number) => val > 0 ? `+${val}%` : `${val}%`}
+                    />
+                  </Bar>
+                  <Bar 
+                    name={reportType === 'month' ? 'Tháng trước' : reportType === 'week' ? 'Tuần trước' : reportType === 'quarter' ? 'Quý trước' : reportType === 'year' ? 'Năm trước' : 'Kỳ trước'} 
+                    dataKey="previous" 
+                    fill={darkMode ? "#475569" : "#cbd5e1"} 
+                    radius={[4, 4, 0, 0]} 
+                    barSize={20} 
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : itemComparisonData.length === 0 ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8">
+                <ArrowLeftRight className={`w-12 h-12 mb-4 opacity-20 ${darkMode ? 'text-white' : 'text-slate-900'}`} />
+                <p className={`text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                  Không có dữ liệu tiêu hao để so sánh
+                </p>
+              </div>
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <Loader2 className="w-8 h-8 animate-spin text-blue-500 opacity-20" />
+              </div>
+            )}
           </div>
         </div>
       </div>
