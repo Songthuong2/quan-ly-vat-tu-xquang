@@ -2688,6 +2688,16 @@ function InventoryAudit({ items, categories, globalSearch, darkMode }: { items: 
     });
   }, [items, searchTerm, globalSearch, filterCategory, categoryIdMap]);
 
+  const changedCount = useMemo(() => {
+    return Object.entries(auditData).filter(([itemId, value]) => {
+      if (value === '') return false;
+      const item = items.find(i => i.id === itemId);
+      if (!item) return false;
+      const actual = parseFloat(value);
+      return !isNaN(actual) && Math.abs(item.currentStock - actual) > 0.000001;
+    }).length;
+  }, [auditData, items]);
+
   const handleActualChange = (itemId: string, value: string) => {
     setAuditData(prev => ({ ...prev, [itemId]: value }));
   };
@@ -2771,14 +2781,22 @@ function InventoryAudit({ items, categories, globalSearch, darkMode }: { items: 
               </select>
             </div>
           </div>
-          <button 
-            onClick={handleSaveAudit}
-            disabled={isSaving || Object.keys(auditData).length === 0}
-            className="px-6 py-2.5 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-all shadow-lg shadow-blue-100 disabled:opacity-50 flex items-center gap-2"
-          >
-            {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-            Lưu kết quả
-          </button>
+          <div className="flex items-center gap-4">
+            {changedCount > 0 && (
+              <div className={`flex items-center gap-2 px-4 py-2 rounded-xl border animate-pulse ${darkMode ? 'bg-orange-500/10 border-orange-500/20 text-orange-400' : 'bg-orange-50 border-orange-100 text-orange-600'}`}>
+                <AlertCircle className="w-4 h-4" />
+                <span className="text-sm font-bold">{changedCount} vật tư thay đổi</span>
+              </div>
+            )}
+            <button 
+              onClick={handleSaveAudit}
+              disabled={isSaving || Object.keys(auditData).length === 0}
+              className="px-6 py-2.5 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-all shadow-lg shadow-blue-100 disabled:opacity-50 flex items-center gap-2"
+            >
+              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+              Lưu kết quả
+            </button>
+          </div>
         </div>
       </div>
 
